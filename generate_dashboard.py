@@ -117,6 +117,8 @@ full_html = fr"""
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HSC Digital Resource Library</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap">
+<link rel="manifest" href="manifest.json">
+
 
 <style>
 :root {{
@@ -215,7 +217,7 @@ full_html += fr"""
 <div class="container">
     <div id="library" class="view active">
         <h1>Subject Library</h1>
-        <p class="subtitle">Select a subject for HSC 2026 notes.</p>
+        <p class="subtitle">Select a subject for HSC notes.</p>
         <div class="bento-grid">{lib_html}</div>
     </div>
     <div id="exams" class="view">
