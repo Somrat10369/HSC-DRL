@@ -1,297 +1,61 @@
 import json
-import html
-import os
 
-# ---------------- CONFIG ----------------
-DATA_FILE = "data.json"
-OUTPUT_FILE = "index.html"
+# Load MEGA tree data
+with open('data.json', 'r', encoding='utf-8') as f:
+    mega_data = json.load(f)
 
-SUBJECT_META = {
-    "পদার্থবিজ্ঞান": {"color": "#ef4444", "icon": "⚛️", "size": "large"},
-    "উচ্চতর গণিত": {"color": "#ec4899", "icon": "📐", "size": "large"},
-    "রসায়ন": {"color": "#8b5cf6", "icon": "🧪", "size": "medium"},
-    "জীববিজ্ঞান": {"color": "#10b981", "icon": "🧬", "size": "medium"},
-    "বাংলা": {"color": "#f59e0b", "icon": "✍️", "size": "small"},
-    "English": {"color": "#3b82f6", "icon": "🔤", "size": "small"},
-    "ICT": {"color": "#06b6d4", "icon": "💻", "size": "small"},
-    "Digital": {"color": "#f97316", "icon": "🌐", "size": "medium"},
-}
+def transform_to_local_format(nodes, path=""):
+    items = []
+    for key, node in nodes.items():
+        current_path = f"{path}/{key}" if path else key
+        is_folder = bool(node.get('children'))
+        items.append({
+            "name": node.get('title', key),
+            "path": current_path,
+            "type": "folder" if is_folder else "file",
+            "link": node.get('link', '#'),
+            "size": node.get('size', 0),
+            "mtime": node.get('mtime', 0),
+            "children": transform_to_local_format(node.get('children', {}), current_path) if is_folder else None
+        })
+    return items
 
-SUBJECT_ORDER = ["বাংলা", "English", "ICT", "পদার্থবিজ্ঞান", "রসায়ন", "উচ্চতর গণিত", "জীববিজ্ঞান", "Digital"]
-BANGLA_PAPER_ORDER = {"প্রথম": 1, "দ্বিতীয়": 2, "তৃতীয়": 3, "চতুর্থ": 4}
+def flatten_mega(nodes, path=""):
+    flat = []
+    for key, node in nodes.items():
+        current_path = f"{path}/{key}" if path else key
+        is_folder = bool(node.get('children'))
+        flat.append({"name": node.get('title', key), "path": current_path, "type": "folder" if is_folder else "file", "link": node.get('link', '#')})
+        if is_folder: flat.extend(flatten_mega(node.get('children', {}), current_path))
+    return flat
 
-# ---------------- HELPERS ----------------
-def get_subject_meta(name: str) -> dict:
-    for subject, meta in SUBJECT_META.items():
-        if name.startswith(subject):
-            return meta
-    return {"color": "#94a3b8", "icon": "📚", "size": "small"}
+mega_library_js = json.dumps(transform_to_local_format(mega_data))
+search_data_js = json.dumps(flatten_mega(mega_data))
 
-def subject_sort_key(name: str) -> int:
-    for i, subject in enumerate(SUBJECT_ORDER):
-        if name.startswith(subject):
-            return i
-    return len(SUBJECT_ORDER)
-
-def build_file_tree(node_dict: dict) -> str:
-    if not node_dict:
-        return ""
-    html_out = '<ul class="tree-list">'
-    
-    def tree_sort_key(item):
-        title, data = item
-        is_file = not bool(data.get("children"))
-        paper_order = 999
-        for word, order in BANGLA_PAPER_ORDER.items():
-            if word in title:
-                paper_order = order
-                break
-        return (is_file, paper_order, title)
-
-    items = sorted(node_dict.items(), key=tree_sort_key)
-    for title, item in items:
-        safe_title = html.escape(title)
-        children = item.get("children", {})
-        if children:
-            html_out += f"""
-            <li class="tree-folder">
-                <details>
-                    <summary>📂 {safe_title}</summary>
-                    <div class="nested-content">{build_file_tree(children)}</div>
-                </details>
-            </li>"""
-        else:
-            link = html.escape(item.get("link", "#"))
-            html_out += f'<li><a href="{link}" target="_blank" class="tree-file">📄 {safe_title}</a></li>'
-    return html_out + "</ul>"
-
-def create_card(name, data, is_exam=False):
-    meta = get_subject_meta(name)
-    children = data.get("children", {})
-    tree_content = build_file_tree(children)
-    js_content = json.dumps(tree_content)
-    safe_name = html.escape(name)
-    
-    css_class = f"bento-item {meta['size']}" if not is_exam else "bento-item medium exam-card"
-    badge = '<div class="card-badge">PYQ Hub</div>' if is_exam else ""
-    
-    return f"""
-    <div class="{css_class}" style="--accent: {meta['color']}" onclick='openPanel("{safe_name}", {js_content})'>
-        {badge}
-        <div class="card-icon">{meta['icon']}</div>
-        <div class="card-body">
-            <h3>{safe_name}</h3>
-            <p>{len(children)} Sections Available</p>
-        </div>
-        <div class="hover-glow"></div>
-    </div>"""
-
-# ---------------- LOAD DATA ----------------
-if not os.path.exists(DATA_FILE):
-    initial = {
-        "Notes": {"children": {}},
-        "PYQ": {"children": {}},
-        "Digital": {"children": {}}
-    }
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(initial, f, indent=4, ensure_ascii=False)
-
-with open(DATA_FILE, "r", encoding="utf-8") as f:
-    raw_data = json.load(f)
-
-notes_data = raw_data.get("Notes", {}).get("children", {})
-pyq_data = raw_data.get("PYQ", {}).get("children", {})
-digital_data = raw_data.get("Digital", {}).get("children", {})
-
-# ---------------- GENERATE CARDS ----------------
-lib_html = "".join([create_card(n, d) for n, d in sorted(notes_data.items(), key=lambda x: subject_sort_key(x[0]))])
-exam_html = "".join([create_card(n, d, True) for n, d in pyq_data.items()])
-digital_html = "".join([create_card(n, d) for n, d in digital_data.items()])
-
-# ---------------- FINAL TEMPLATE ----------------
-full_html = fr"""
-<!DOCTYPE html>
-<html lang="bn">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HSC Digital Resource Library</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap">
-<link rel="manifest" href="manifest.json">
-
-
-<style>
-:root {{
-    --bg: #0b0f1a; --sidebar: #111827; --card: #1f2937;
-    --border: rgba(255,255,255,0.08); --accent: #38bdf8;
-    --text-main: #f3f4f6; --text-dim: #9ca3af;
-}}
-* {{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; transition:all 0.2s ease; }}
-body {{ margin:0; font-family:'Plus Jakarta Sans',sans-serif; background:var(--bg); color:var(--text-main); display:flex; height:100vh; overflow:hidden; }}
-nav {{ width:80px; background:var(--sidebar); border-right:1px solid var(--border); display:flex; flex-direction:column; align-items:center; padding:20px 0; justify-content:space-between; flex-shrink:0; }}
-.nav-group {{ display:flex; flex-direction:column; gap:16px; align-items:center; width:100%; }}
-.nav-logo {{ font-weight:800; color:var(--accent); font-size:24px; margin-bottom:16px; }}
-.nav-item {{ width:48px; height:48px; border-radius:12px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--text-dim); border:1px solid transparent; font-size:1.2rem; }}
-.nav-item:hover {{ background: rgba(255,255,255,0.05); color:var(--text-main); }}
-.nav-item.active {{ background: var(--accent); color: var(--bg); box-shadow:0 0 20px rgba(56,189,248,0.4); }}
-
-main {{ flex:1; overflow-y:auto; padding:40px 60px; scroll-behavior:smooth; position:relative; }}
-.container {{ max-width:1200px; margin:0 auto; min-height:100%; display:flex; flex-direction:column; }}
-h1 {{ font-size:clamp(1.8rem,5vw,2.5rem); font-weight:800; margin:0 0 8px; letter-spacing:-1px; }}
-.subtitle {{ color:var(--text-dim); margin-bottom:32px; font-size:1rem; }}
-
-.view {{ display:none; flex:1; }}
-.view.active {{ display:block; animation:slideUp 0.4s ease; }}
-@keyframes slideUp {{ from {{ opacity:0; transform:translateY(10px); }} to {{ opacity:1; transform:translateY(0); }} }}
-
-.bento-grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); grid-auto-rows:160px; gap:20px; }}
-.bento-item {{ background:var(--card); border:1px solid var(--border); border-radius:24px; padding:24px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer; overflow:hidden; }}
-.bento-item:hover {{ border-color:var(--accent); transform:translateY(-5px); box-shadow:0 10px 30px rgba(0,0,0,0.3); }}
-.large {{ grid-column:span 2; grid-row:span 2; }}
-.medium {{ grid-column:span 2; }}
-
-.card-icon {{ font-size:32px; }}
-.card-body h3 {{ margin:0; font-size:1.2rem; }}
-.card-body p {{ margin:4px 0 0; color:var(--text-dim); font-size:0.85rem; }}
-.card-badge {{ position:absolute; top:16px; right:16px; background:rgba(56,189,248,0.1); color:var(--accent); padding:4px 10px; border-radius:20px; font-size:11px; font-weight:700; }}
-
-#panel {{ position:fixed; right:-100%; top:0; width:500px; height:100vh; background:#111827; border-left:1px solid var(--border); z-index:2000; padding:40px; overflow-y:auto; transition:0.4s cubic-bezier(0.4,0,0.2,1); }}
-#panel.active {{ right:0; box-shadow:-20px 0 50px rgba(0,0,0,0.5); }}
-.close-btn {{ float:right; cursor:pointer; font-size:32px; color:var(--text-dim); }}
-
-.tree-list {{ list-style:none; padding:0; margin:0; }}
-summary {{ padding:12px 15px; background:rgba(255,255,255,0.03); border-radius:10px; margin:6px 0; cursor:pointer; font-weight:600; font-size:0.95rem; display:flex; align-items:center; }}
-summary:hover {{ background:rgba(255,255,255,0.07); }}
-.nested-content {{ margin-left:18px; border-left:1px solid rgba(255,255,255,0.1); padding-left:12px; }}
-.tree-file {{ display:block; padding:10px; color:var(--text-dim); text-decoration:none; font-size:0.9rem; border-radius:8px; }}
-.tree-file:hover {{ color:var(--accent); background:rgba(56,189,248,0.05); }}
-
-footer {{ margin-top:auto; padding:40px 0 20px; border-top:1px solid var(--border); text-align:center; color:var(--text-dim); font-size:0.85rem; }}
-.footer-links {{ margin-top:12px; display:flex; justify-content:center; gap:20px; }}
-.footer-links span, .footer-links a {{ color:var(--accent); text-decoration:none; cursor:pointer; font-weight:600; }}
-
-#disclaimer-modal {{ display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:3000; align-items:center; justify-content:center; padding:20px; }}
-.modal-content {{ background:var(--sidebar); padding:35px; border-radius:24px; max-width:550px; border:1px solid var(--border); line-height:1.6; }}
-.modal-content h3 {{ margin-top:0; color:#fff; }}
-.modal-btn {{ background:var(--accent); color:var(--bg); border:none; padding:12px 24px; border-radius:10px; cursor:pointer; margin-top:20px; font-weight:700; width:100%; }}
-
-@media (max-width:850px) {{
-    body {{ flex-direction:column; }}
-    nav {{ width:100%; height:70px; flex-direction:row; padding:0 20px; order:2; border-right:none; border-top:1px solid var(--border); }}
-    .nav-group {{ flex-direction:row; justify-content:center; }}
-    .nav-logo {{ display:none; }}
-    main {{ padding:25px 20px 100px; order:1; }}
-    .bento-grid {{ grid-template-columns:1fr; grid-auto-rows:auto; }}
-    .large, .medium {{ grid-column:span 1; grid-row:span 1; }}
-    #panel {{ width:100%; }}
-    footer {{ padding-bottom:40px; }}
-}}
-</style>
-"""
-
-# ---------------- BODY ----------------
-full_html += fr"""
-<body>
-<nav>
-
-    <div class="nav-group">
-        <div class="nav-item" onclick="collapseAll()" title="Collapse All Folders">🧹</div>
+full_html = f"""<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>HSC Command Center</title><script src="https://cdn.jsdelivr.net/npm/fuse.js/dist/fuse.js"></script><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" /><style>:root{{--bg:#05070a;--sidebar:#0d1117;--panel:#161b22;--border:#30363d;--accent:#58a6ff;--text:#c9d1d9;--danger:#f85149}}*{{box-sizing:border-box;transition:background 0.2s,color 0.2s}}body.theme-dark{{--bg:#05070a;--sidebar:#0d1117;--panel:#161b22;--border:#30363d;--accent:#58a6ff}}body.theme-oled{{--bg:#000;--sidebar:#000;--panel:#0b0b0b;--border:#1c1c1c;--accent:#037ff4;--text:#f0f0f0}}body.theme-cyberpunk{{--bg:#080010;--sidebar:#11001f;--panel:#260042;--border:#ff2b6a;--accent:#00f2ff;--text:#f0e9ff}}body{{margin:0;display:flex;height:100vh;background:var(--bg);color:var(--text);font-family:"Plus Jakarta Sans",sans-serif;overflow:hidden}}aside{{width:320px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;z-index:1000}}.sidebar-header{{padding:20px;text-align:center;border-bottom:1px solid var(--border)}}#digital-clock{{font-family:"JetBrains Mono";font-size:2.2rem;font-weight:700;color:var(--accent)}}.scroll-area{{flex:1;overflow-y:auto;padding:15px;display:flex;flex-direction:column;gap:20px}}.section-title{{font-size:0.65rem;font-weight:800;color:#8b949e;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px;display:flex;justify-content:space-between}}.widget-box{{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:15px;text-align:center}}.btn-action{{background:var(--accent);color:#000;border:none;width:100%;padding:10px;border-radius:6px;font-weight:bold;cursor:pointer;font-size:0.8rem}}.nav-btn{{padding:12px;border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:10px;font-weight:600;margin-bottom:4px}}.nav-btn.active{{background:var(--accent);color:#000}}.app-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}}.app-item{{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center;cursor:pointer;position:relative}}.timer-tray{{background:var(--panel);padding:15px;border-top:1px solid var(--border);display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:center}}#t-input{{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--accent);text-align:center;padding:5px}}main{{flex:1;display:flex;flex-direction:column;height:100vh;position:relative}}#content-wrapper{{flex:1;overflow-y:auto;display:flex;flex-direction:column}}.view-pane{{flex:1;display:none;padding:20px}}.view-pane.active{{display:block}}.top-bar{{padding:15px 30px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}}#breadcrumb span{{cursor:pointer}}#breadcrumb span:hover{{color:var(--accent)}}.grid-layout{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:20px;padding:30px}}.list-layout{{display:flex;flex-direction:column;padding:0}}.list-item{{display:grid;grid-template-columns:50px 2fr 100px 50px;padding:12px 30px;border-bottom:1px solid var(--border);align-items:center;cursor:pointer;background:var(--panel)}}.card{{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px}}footer{{padding:20px;text-align:center;font-size:0.75rem;border-top:1px solid var(--border);background:var(--sidebar);margin-top:auto}}input,select,textarea{{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;outline:none}}.hamburger{{display:none;position:fixed;top:15px;left:15px;z-index:2000;background:var(--accent);color:black;border:none;padding:10px;border-radius:8px;cursor:pointer}}.modal{{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:2000;align-items:center;justify-content:center;backdrop-filter:blur(4px)}}.modal-box{{background:var(--panel);padding:30px;border-radius:12px;border:1px solid var(--accent);width:450px}}@media (max-width: 900px){{.hamburger{{display:block}}aside{{position:absolute;left:-100%;height:100%;transition:0.3s}}aside.open{{left:0}}main{{width:100%}}.top-bar{{padding-left:70px}}}}</style></head><body><button class="hamburger" onclick="document.querySelector('aside').classList.toggle('open')">☰</button><aside><div class="sidebar-header"><div id="digital-clock">00:00:00</div></div><div class="scroll-area"><div class="widget-box"><div class="section-title">Focus Decider</div><div id="decider-result" style="font-weight:800;color:var(--accent);margin:10px 0;font-size:1.1rem;min-height:25px">Ready...</div><button class="btn-action" onclick="pickSubject()"> ROLL THE DICE </button></div><nav><div class="nav-btn active" onclick="switchTab('tab-library', this)"> 📂 Library </div><div class="nav-btn" onclick="switchTab('tab-todo', this)"> ✅ To-Do List </div><div class="nav-btn" onclick="switchTab('tab-activity', this)"> 📊 Activity </div><div class="nav-btn" onclick="switchTab('tab-settings', this)"> ⚙️ Settings </div></nav><div><div class="section-title"> Quick Apps <span onclick="openModal('modal-app')" style="cursor: pointer">+</span></div><div class="app-grid" id="app-grid"></div></div><div><div class="section-title">Context Notes</div><textarea id="note-area" style="width:100%;height:100px;resize:none;font-size:0.8rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px"></textarea></div></div><div class="timer-tray"><input type="number" id="t-input" value="25" /><div id="t-display" style="font-family:'JetBrains Mono';font-weight:bold;font-size:1rem">25:00</div><button class="btn-action" style="padding:5px" onclick="toggleTimer()" id="btn-timer">▶</button><button class="btn-action" style="padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border)" onclick="resetTimer()">↺</button></div></aside><main><div id="content-wrapper"><section id="tab-library" class="view-pane active"><div class="top-bar"><div id="breadcrumb" style="font-weight:800">🏠 Library</div><div style="display:flex;gap:10px"><select onchange="setSort(this.value)" style="padding:5px;font-size:0.7rem;background:var(--panel)"><option value="name">Sort: Name</option><option value="type">Sort: Type</option><option value="size">Sort: Size</option></select><button onclick="toggleViewMode()" style="background:var(--panel);color:var(--text);border:1px solid var(--border);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:0.7rem">Layout</button><button onclick="openModal('modal-search')" class="btn-action" style="width:auto;padding:5px 15px">🔍 Search</button></div></div><div id="library-content"></div></section><section id="tab-todo" class="view-pane"><div style="max-width:700px;margin:auto"><h1>Tasks</h1><div class="card"><div style="display:flex;gap:10px;margin-bottom:20px"><input type="text" id="todo-input" style="flex:1" placeholder="Add goal..."><button class="btn-action" style="width:100px" onclick="addTodo()">ADD</button></div><div id="todo-list"></div></div></div></section><section id="tab-activity" class="view-pane"><div style="max-width:700px;margin:auto"><h1>Activity</h1><div class="card" id="activity-list" style="font-family:'JetBrains Mono';font-size:0.8rem"></div></div></section><section id="tab-settings" class="view-pane"><div style="max-width:700px;margin:auto"><h1>Settings</h1><div class="card"><h3>Theme Engine</h3><div style="display:flex;gap:10px;margin-bottom:15px"><span>Presets:</span><select onchange="applyTheme(this.value)" id="theme-selector" style="flex:1"><option value="dark">Dark</option><option value="oled">OLED</option><option value="cyberpunk">Cyberpunk</option></select></div><div style="border-top:1px solid var(--border);padding-top:15px"><h4>Custom Theme Builder</h4><div style="display:flex;gap:10px;margin-bottom:10px"><span>BG</span><input type="color" id="cust-bg" value="#05070a"><span>Side</span><input type="color" id="cust-side" value="#0d1117"><span>Acc</span><input type="color" id="cust-acc" value="#58a6ff"></div><div style="display:flex;gap:10px"><input type="text" id="cust-name" placeholder="Name" style="flex:1"><button onclick="saveCustomTheme()" class="btn-action" style="width:100px">Save</button></div><div id="saved-themes-list" style="margin-top:15px;display:flex;gap:8px;flex-wrap:wrap"></div></div></div><div class="card"><h3>Decider Weights</h3><div id="subject-editor"></div><button onclick="addSubjectRow()" class="btn-action" style="margin-top:10px;background:var(--bg);color:var(--text);border:1px solid var(--border)">+ Add</button></div></div></section></div><footer style="padding: 25px 20px; text-align: center; border-top: 1px solid var(--border); background: var(--sidebar); margin-top: auto;">
+  <div style="margin-bottom: 12px;">
+    <div style="font-weight: 800; color: var(--accent); letter-spacing: 1.5px; font-size: 0.9rem; text-transform: uppercase;">
+      HSC DIGITAL RESOURCE LIBRARY <span style="opacity: 0.6; font-weight: 400; font-family: 'JetBrains Mono';">v2.0</span>
     </div>
-
-
-    <div class="nav-group" style="flex-grow:1; justify-content:center;">
-        <div class="nav-item" onclick="switchView('exams', this)" title="Question Bank">📝</div>
-        <div class="nav-item active" onclick="switchView('library', this)" title="Study Library">📚</div>
-        <div class="nav-item" onclick="switchView('digital', this)" title="Digital Resources">🌐</div>
+    <div style="font-size: 0.75rem; margin-top: 8px; opacity: 0.8; display: flex; align-items: center; justify-content: center; gap: 6px;">
+      <span>Curated by</span>
+      <a href="https://github.com/Somrat10369" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: 600; display: flex; align-items: center; gap: 5px;">
+        <svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+        </svg>
+        Somrat10369
+      </a>
     </div>
+  </div>
 
+  <hr style="border: 0; border-top: 1px solid var(--border); width: 40px; margin: 15px auto;">
 
-    <div class="nav-group">
-        <div class="nav-item" onclick="location.reload()" title="Refresh Page">🔄</div>
-        <div class="nav-logo">H</div>
-    </div>
+  <div style="font-size: 0.65rem; line-height: 1.6; opacity: 0.5; max-width: 320px; margin: 0 auto; text-align: center; font-family: sans-serif;">
+    <strong style="color: var(--text); opacity: 0.8;">LEGAL DISCLAIMER:</strong> This platform is a non-commercial academic utility. 
+    All indexed digital resources are sourced from public-domain educational repositories. 
+    We do not claim ownership of hosted materials.
+  </div>
+</footer></main><div id="modal-app" class="modal" onclick="closeModals()"><div class="modal-box" onclick="event.stopPropagation()"><h3>Add App</h3><input type="text" id="app-name" placeholder="Name"><input type="text" id="app-url" placeholder="URL"><input type="text" id="app-icon" placeholder="Emoji"><button onclick="saveApp()" class="btn-action">Add</button></div></div><div id="modal-search" class="modal" onclick="closeModals()"><div class="modal-box" onclick="event.stopPropagation()"><input type="text" id="search-input" placeholder="Deep Search..." style="width:100%"><div id="search-results" style="max-height:250px;overflow-y:auto;margin-top:15px"></div></div></div><script>let rawLibrary={mega_library_js},navStack=[],subjects=[],settings={{customThemes:[]}},todos=[],logs=[],viewMode="grid",timerInt,timeLeft,sortKey="name";function init(){{const s=JSON.parse(localStorage.getItem('hsc_v5')||'{{}}');subjects=s.subjects||[];settings=s.settings||{{customThemes:[]}};todos=s.todos||[];logs=s.logs||[];if(settings.activeTheme)applyTheme(settings.activeTheme);setInterval(()=>{{document.getElementById("digital-clock").innerText=new Date().toLocaleTimeString()}},1000);renderLibrary();loadApps();renderSubjectEditor();renderTodos();renderLogs();renderSavedThemes()}}function persist(){{localStorage.setItem('hsc_v5',JSON.stringify({{subjects,settings,todos,logs}}))}}function switchTab(id,btn){{document.querySelectorAll(".view-pane").forEach(p=>p.classList.remove("active"));document.querySelectorAll(".nav-btn").forEach(b=>b.classList.remove("active"));document.getElementById(id).classList.add("active");btn.classList.add("active");document.querySelector('aside').classList.remove('open')}}function renderLibrary(){{const cont=document.getElementById("library-content");let items=navStack.length?navStack[navStack.length-1].children:rawLibrary;items.sort((a,b)=>{{if(a.type==="folder"&&b.type!=="folder")return-1;if(a.type!=="folder"&&b.type==="folder")return 1;return a[sortKey]>b[sortKey]?1:-1}});cont.className=viewMode==="grid"?"grid-layout":"list-layout";cont.innerHTML=items.map(i=>viewMode==="grid"?`<div class="app-item" onclick="openItem('${{i.path}}',${{i.type==='folder'}})"> <div style="font-size:2.5rem;margin-bottom:10px;">${{i.type==='folder'?'📂':'📄'}}</div> <div style="font-weight:bold;font-size:0.8rem">${{i.name}}</div> </div>`:`<div class="list-item" onclick="openItem('${{i.path}}',${{i.type==='folder'}})"><span>${{i.type==='folder'?'📂':'📄'}}</span><span style="font-weight:600">${{i.name}}</span><span>${{i.type}}</span><span>➔</span></div>`).join("")}}function openItem(path,isFolder){{const find=(ns)=>{{for(let n of ns){{if(n.path===path)return n;if(n.children){{let f=find(n.children);if(f)return f}}}}}};const item=find(rawLibrary);if(isFolder){{navStack.push(item);updateBreadcrumb()}}else{{logActivity("Accessed",item.name);window.open(item.link,'_blank')}}}}function updateBreadcrumb(){{renderLibrary();let h=`<span onclick="jumpTo(-1)">🏠 Library</span>`;navStack.forEach((f,i)=>h+=` › <span onclick="jumpTo(${{i}})">${{f.name}}</span>`);document.getElementById("breadcrumb").innerHTML=h}}function jumpTo(i){{if(i===-1)navStack=[];else navStack=navStack.slice(0,i+1);updateBreadcrumb()}}function toggleViewMode(){{viewMode=viewMode==="grid"?"list":"grid";renderLibrary()}}function setSort(k){{sortKey=k;renderLibrary()}}function applyTheme(n){{document.body.className='theme-'+n;settings.activeTheme=n;persist();document.getElementById('theme-selector').value=n;document.documentElement.removeAttribute('style')}}function saveCustomTheme(){{const t={{name:document.getElementById("cust-name").value||"Custom",bg:document.getElementById("cust-bg").value,side:document.getElementById("cust-side").value,acc:document.getElementById("cust-acc").value}};settings.customThemes.push(t);persist();renderSavedThemes();applyCustomCSS(t.bg,t.side,t.acc)}}function applyCustomCSS(bg,side,acc){{const r=document.documentElement;r.style.setProperty("--bg",bg);r.style.setProperty("--sidebar",side);r.style.setProperty("--panel",side);r.style.setProperty("--accent",acc)}}function renderSavedThemes(){{document.getElementById("saved-themes-list").innerHTML=(settings.customThemes||[]).map((t,i)=>`<div style="display:flex;align-items:center;gap:5px;background:var(--panel);padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:0.7rem"><div onclick="applyCustomCSS('${{t.bg}}','${{t.side}}','${{t.acc}}')" style="cursor:pointer">● ${{t.name}}</div><span onclick="settings.customThemes.splice(${{i}},1);persist();renderSavedThemes()" style="color:var(--danger);cursor:pointer">✕</span></div>`).join("")}}function renderTodos(){{document.getElementById("todo-list").innerHTML=todos.map((t,i)=>`<div style="display:flex;padding:10px;border-bottom:1px solid var(--border)"><input type="checkbox" ${{t.done?'checked':''}} onchange="todos[${{i}}].done=!todos[${{i}}].done;persist();renderTodos()"><span style="flex:1;margin-left:10px">${{t.text}}</span><span onclick="todos.splice(${{i}},1);persist();renderTodos()" style="color:var(--danger);cursor:pointer">✕</span></div>`).join("")}}function addTodo(){{const inp=document.getElementById("todo-input");if(inp.value){{todos.push({{text:inp.value,done:false}});persist();renderTodos();inp.value=""}}}}function logActivity(t,n){{logs.unshift({{time:new Date().toLocaleTimeString(),type:t,name:n}});if(logs.length>30)logs.pop();persist();renderLogs()}}function renderLogs(){{document.getElementById("activity-list").innerHTML=logs.map(l=>`<div>[${{l.time}}] ${{l.type}}: ${{l.name}}</div>`).join("")}}function loadApps(){{const ap=JSON.parse(localStorage.getItem('hsc_apps')||'[]');document.getElementById("app-grid").innerHTML=ap.map((a,i)=>`<div class="app-item" onclick="window.open('${{a.url}}','_blank')"><div style="font-size:1.2rem">${{a.icon}}</div><div style="font-size:0.6rem">${{a.name}}</div></div>`).join("")}}function saveApp(){{const ap=JSON.parse(localStorage.getItem('hsc_apps')||'[]');ap.push({{name:document.getElementById("app-name").value,url:document.getElementById("app-url").value,icon:document.getElementById("app-icon").value}});localStorage.setItem('hsc_apps',JSON.stringify(ap));closeModals();loadApps()}}function renderSubjectEditor(){{document.getElementById("subject-editor").innerHTML=subjects.map((s,i)=>`<div style="display:flex;gap:5px;margin-bottom:5px"><input style="flex:1" type="text" value="${{s.name}}" onchange="subjects[${{i}}].name=this.value"><input style="width:50px" type="number" value="${{s.weight}}" onchange="subjects[${{i}}].weight=parseInt(this.value)"><button onclick="subjects.splice(${{i}},1);renderSubjectEditor()" style="background:var(--danger);border:none;color:white;border-radius:4px">✕</button></div>`).join("")}}function addSubjectRow(){{subjects.push({{name:"New",weight:1}});renderSubjectEditor()}}function pickSubject(){{let p=[];subjects.forEach(s=>{{for(let i=0;i<s.weight;i++)p.push(s.name)}});document.getElementById("decider-result").innerText=p[Math.floor(Math.random()*p.length)]||"None"}}function toggleTimer(){{if(timerInt){{clearInterval(timerInt);timerInt=null;document.getElementById("btn-timer").innerText="▶"}}else{{timeLeft=parseInt(document.getElementById("t-input").value)*60;timerInt=setInterval(()=>{{timeLeft--;let m=Math.floor(timeLeft/60),s=timeLeft%60;document.getElementById("t-display").innerText=`${{m}}:${{String(s).padStart(2,'0')}}`;if(timeLeft<=0){{clearInterval(timerInt);alert("Time Up!")}}}},1000);document.getElementById("btn-timer").innerText="◼"}}}}function resetTimer(){{clearInterval(timerInt);timerInt=null;document.getElementById("t-display").innerText=document.getElementById("t-input").value+":00";document.getElementById("btn-timer").innerText="▶"}}function openModal(id){{document.getElementById(id).style.display="flex"}}function closeModals(){{document.querySelectorAll(".modal").forEach(m=>m.style.display="none")}}const fuse=new Fuse({search_data_js},{{keys:["name"],threshold:0.3}});document.getElementById("search-input").oninput=(e)=>{{const res=fuse.search(e.target.value).slice(0,10);document.getElementById("search-results").innerHTML=res.map(r=>`<div style="padding:10px;border-bottom:1px solid var(--border);cursor:pointer" onclick="openItem('${{r.item.path}}',${{r.item.type==='folder'}})">${{r.item.name}}</div>`).join("")}};init();</script></body></html>"""
 
-</nav>
-
-<main>
-<div class="container">
-    <div id="library" class="view active">
-        <h1>Subject Library</h1>
-        <p class="subtitle">Select a subject for HSC notes.</p>
-        <div class="bento-grid">{lib_html}</div>
-    </div>
-    <div id="exams" class="view">
-        <h1>Exam Hub</h1>
-        <p class="subtitle">Access Board & Admission question banks.</p>
-        <div class="bento-grid">{exam_html}</div>
-    </div>
-    <div id="digital" class="view">
-        <h1>Digital Resources</h1>
-        <p class="subtitle">Curated links, tools, and extra resources for HSC students.</p>
-        <div class="bento-grid">{digital_html}</div>
-    </div>
-    <footer>
-        <p>© <span id="year"></span> HSC Resource Hub | Curated by <strong>Somrat_10369</strong></p>
-        <div class="footer-links">
-            <span onclick="toggleModal(true)">Legal Disclaimer</span>
-            <a href="mailto: somrat10369@gmail.com?subject=Report%20About%20Your%20Websites%20Fair%20Use%20Policy&body=Hi%2C%0AI%20noticed%20an%20issue%20on%20this%20page%3A%20%5BURL%5D.%0AIssue%20(short)%3A%20%5Bdescribe%20the%20problem%20or%20suggested%20correction%5D.%0ASuggested%20correction%3A%20%5Bwhat%20you'd%20like%20changed%5D.%0AOptional%3A%20My%20contact%20info%3A%20%5Bemail%2Fphone%5D%0A%0AThanks%20for%20maintaining%20this%20resource%2C%0A%5BYour%20Name%5D">Contact Support</a>
-        </div>
-    </footer>
-</div>
-
-<div id="panel">
-    <span class="close-btn" onclick="closePanel()">×</span>
-    <h2 id="panel-title" style="margin-top:0; font-size:1.8rem;">Subject</h2>
-    <div id="panel-body" style="margin-top:30px;"></div>
-</div>
-
-    <div id="disclaimer-modal">
-        <div class="modal-content">
-            <h3>⚖️ Legal Disclaimer</h3>
-            <p>This website is an <strong>educational project</strong> created to help students access resources easily. All materials (PDFs, images, and links) are sourced from publicly available files on the internet.</p>
-            <p><strong>Copyright Notice:</strong> We do not claim ownership of any copyrighted books or lecture notes. All rights belong to the original authors and publishers. No harm is intended toward any commercial interests.</p>
-            <p>If you are a copyright owner and would like content removed, please contact us and we will take immediate action.</p>
-            <button class="modal-btn" onclick="toggleModal(false)">I AGREE</button>
-        </div>
-    </div>
-</main>
-
-
-<script>
-document.getElementById('year').textContent = new Date().getFullYear();
-
-function switchView(viewId, el) {{
-    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
-    document.getElementById(viewId).classList.add('active');
-    el.classList.add('active');
-}}
-
-function openPanel(title, content) {{
-    document.getElementById('panel-title').innerText = title;
-    document.getElementById('panel-body').innerHTML = content;
-    document.getElementById('panel').classList.add('active');
-    if(window.innerWidth<850) document.body.style.overflow='hidden';
-}}
-
-function closePanel() {{
-    document.getElementById('panel').classList.remove('active');
-    document.body.style.overflow='auto';
-}}
-
-function toggleModal(show) {{
-    document.getElementById('disclaimer-modal').style.display = show ? 'flex' : 'none';
-}}
-
-function collapseAll() {{
-    document.querySelectorAll('details[open]').forEach(d=>d.removeAttribute('open'));
-}}
-</script>
-</body>
-</html>
-"""
-
-# ---------------- WRITE ----------------
-with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+with open('index.html', 'w', encoding='utf-8') as f:
     f.write(full_html)
-print(f"Dashboard successfully generated: {OUTPUT_FILE}")
