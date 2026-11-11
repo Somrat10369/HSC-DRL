@@ -2714,6 +2714,239 @@
       }
 
       window.onload = initializeSystemShell;
+
+    <style id="local-studyos-enhancements">
+      :root { --accent: #a78bfa; --accent-glow: rgba(167,139,250,.16); --ease-apple: cubic-bezier(.2,.8,.2,1); }
+      body { background-image: radial-gradient(ellipse at 12% 8%, rgba(167,139,250,.11), transparent 34%), radial-gradient(ellipse at 88% 90%, rgba(56,189,248,.08), transparent 38%); }
+      .focus-card { transition: transform .22s ease, border-color .22s ease, background .22s ease; }
+      .focus-card:hover { transform: translateY(-3px); border-color: var(--accent); background: var(--bg-glass-active); }
+      .local-library-panel { margin: 0 0 22px; padding: 20px; border: 1px solid var(--border-active); border-radius: 18px; background: linear-gradient(120deg, var(--bg-glass-active), var(--bg-glass)); display:flex; align-items:center; justify-content:space-between; gap:18px; flex-wrap:wrap; }
+      .local-library-panel h2 { font-size:1rem; margin-bottom:5px; }
+      .local-library-panel p { color:var(--text-dim); font-size:.8rem; }
+      .local-library-actions { display:flex; gap:9px; flex-wrap:wrap; }
+      .local-library-status { display:inline-flex; align-items:center; gap:7px; color:var(--success); font-size:.75rem; margin-top:8px; }
+      .local-library-status:before { content:''; width:7px; height:7px; border-radius:50%; background:currentColor; box-shadow:0 0 12px currentColor; }
+      .local-file-meta { color:var(--text-muted); font-size:.75rem; margin-top:7px; }
+      .local-empty { grid-column:1/-1; padding:54px 24px; text-align:center; border:1px dashed var(--border-active); border-radius:18px; color:var(--text-dim); }
+      .local-crumb { color:var(--accent); cursor:pointer; }
+      .local-crumb:hover { text-decoration:underline; }
+      .local-viewer { position:fixed; inset:3vh 3vw; z-index:10000; background:#11131c; border:1px solid var(--border-active); border-radius:18px; box-shadow:0 30px 100px #000a; display:none; flex-direction:column; overflow:hidden; }
+      .local-viewer.open { display:flex; }
+      .local-viewer header { display:flex; justify-content:space-between; align-items:center; padding:12px 18px; border-bottom:1px solid #ffffff18; }
+      .local-viewer iframe, .local-viewer img, .local-viewer video { flex:1; width:100%; height:100%; min-height:0; object-fit:contain; border:0; background:#fff; }
+      .local-viewer pre { flex:1; overflow:auto; padding:24px; white-space:pre-wrap; color:#eee; }
+      @media(max-width:800px) { .app-viewport { padding:10px; gap:10px; } .local-library-panel { align-items:flex-start; } }
+    </style>
+    <div id="local-file-viewer" class="local-viewer" role="dialog" aria-modal="true">
+      <header><strong id="local-viewer-title">Preview</strong><button class="system-btn secondary" onclick="closeLocalFilePreview()">Close</button></header>
+      <div id="local-viewer-content" style="display:flex;flex:1;min-height:0;overflow:auto;"></div>
+    </div>
+    <script>
+      // Local-first library layer. Directory handles are saved in IndexedDB; file contents stay on the user's device.
+      let localRootHandle = null;
+      let localDirectoryIndex = [];
+      let localCurrentPath = [];
+      let localModeEnabled = false;
+      let localObjectUrls = [];
+      const LOCAL_HANDLE_DB = "HSCStudyOSLocalFiles";
+      function openLocalHandleDB() {
+        return new Promise((resolve, reject) => {
+          const request = indexedDB.open(LOCAL_HANDLE_DB, 1);
+          request.onupgradeneeded = () => request.result.createObjectStore("settings");
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      }
+      async function persistLocalRootHandle(handle) {
+        const db = await openLocalHandleDB();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction("settings", "readwrite");
+          tx.objectStore("settings").put(handle, "rootDirectory");
+          tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+        });
+        db.close();
+      }
+      async function restoreLocalRootHandle() {
+        try {
+          const db = await openLocalHandleDB();
+          const handle = await new Promise((resolve, reject) => {
+            const req = db.transaction("settings").objectStore("settings").get("rootDirectory");
+            req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+          });
+          db.close();
+          if (handle && (await handle.queryPermission({mode:"read"})) === "granted") {
+            localRootHandle = handle; await indexLocalDirectory();
+          }
+        } catch (error) { console.info("No saved local folder permission.", error); }
+      }
+      async function chooseLocalDirectory() {
+        if (!window.showDirectoryPicker) {
+          alert("Folder access needs a Chromium-based browser such as Vivaldi or Chrome, on HTTPS or localhost.");
+          return;
+        }
+        try {
+          localRootHandle = await window.showDirectoryPicker({id:"hsc-study-library", mode:"read"});
+          await persistLocalRootHandle(localRootHandle);
+          await indexLocalDirectory();
+          writeEventLog("Local study folder connected: " + localRootHandle.name);
+        } catch (error) {
+          if (error.name !== "AbortError") alert("Could not open folder: " + error.message);
+        }
+      }
+      async function indexLocalDirectory() {
+        if (!localRootHandle) return;
+        const permission = await localRootHandle.queryPermission({mode:"read"});
+        if (permission !== "granted" && await localRootHandle.requestPermission({mode:"read"}) !== "granted") {
+          alert("Folder permission was not granted."); return;
+        }
+        localDirectoryIndex = [];
+        async function walk(handle, path) {
+          for await (const entry of handle.values()) {
+            const entryPath = path.concat(entry.name);
+            const isDirectory = entry.kind === "directory";
+            localDirectoryIndex.push({name:entry.name, path:entryPath, kind:entry.kind, handle:entry, parent:path});
+            if (isDirectory) await walk(entry, entryPath);
+          }
+        }
+        await walk(localRootHandle, []);
+        localModeEnabled = true; localCurrentPath = [];
+        databaseFlatCacheList = localDirectoryIndex.filter(x => x.kind === "file").map(x => ({title:x.name, link:"", pathStack:x.path.slice(0,-1), localPath:x.path}));
+        initFuzzySearchIndex();
+        const banner = document.getElementById("local-library-status");
+        if (banner) banner.textContent = localRootHandle.name + " · " + localDirectoryIndex.filter(x=>x.kind==="file").length + " files indexed";
+        renderCatalogDirectory();
+      }
+      function localPathLabel() {
+        return [localRootHandle ? localRootHandle.name : "Library"].concat(localCurrentPath).join(" / ");
+      }
+      async function getLocalDirectoryHandle(path) {
+        let current = localRootHandle;
+        for (const segment of path) current = await current.getDirectoryHandle(segment);
+        return current;
+      }
+      async function openLocalFile(path) {
+        try {
+          let parent = await getLocalDirectoryHandle(path.slice(0,-1));
+          const handle = await parent.getFileHandle(path[path.length-1]);
+          const file = await handle.getFile();
+          const url = URL.createObjectURL(file); localObjectUrls.push(url);
+          const outlet = document.getElementById("local-viewer-content");
+          const title = document.getElementById("local-viewer-title");
+          title.textContent = file.name; outlet.innerHTML = "";
+          const type = file.type || "";
+          if (type.startsWith("image/")) {
+            const img = document.createElement("img"); img.src=url; outlet.appendChild(img);
+          } else if (type === "application/pdf" || type.startsWith("video/") || type.startsWith("audio/")) {
+            const frame = document.createElement(type.startsWith("video/") ? "video" : type.startsWith("audio/") ? "audio" : "iframe");
+            frame.src=url; if (frame.tagName !== "IFRAME") frame.controls=true; outlet.appendChild(frame);
+          } else if (type.startsWith("text/") || /\.(txt|md|csv|json|log)$/i.test(file.name)) {
+            const pre=document.createElement("pre"); pre.textContent=await file.text(); outlet.appendChild(pre);
+          } else {
+            const frame=document.createElement("iframe"); frame.src=url; outlet.appendChild(frame);
+          }
+          document.getElementById("local-file-viewer").classList.add("open");
+        } catch(error) { alert("Unable to open file: " + error.message); }
+      }
+      function closeLocalFilePreview() {
+        document.getElementById("local-file-viewer").classList.remove("open");
+        localObjectUrls.forEach(URL.revokeObjectURL); localObjectUrls=[];
+        document.getElementById("local-viewer-content").innerHTML="";
+      }
+      function renderLocalDirectory() {
+        const outlet=document.getElementById("catalog-grid-outlet");
+        if (!outlet) return;
+        const current=localCurrentPath.join("/");
+        const entries=localDirectoryIndex.filter(item=>item.parent.join("/")===current);
+        const crumbs=[{name:localRootHandle.name,path:[]}];
+        localCurrentPath.forEach((name,i)=>crumbs.push({name,path:localCurrentPath.slice(0,i+1)}));
+        const toolbar=document.getElementById("directory-breadcrumb");
+        if (toolbar) toolbar.innerHTML=crumbs.map((c,i)=>'<span class="local-crumb" onclick="localCurrentPath='+JSON.stringify(c.path).replace(/"/g,"&quot;")+';renderCatalogDirectory()">'+(i?" / ":"")+escapeLocalText(c.name)+'</span>').join("");
+        if (!entries.length) {
+          outlet.innerHTML='<div class="local-empty"><h3>This folder is empty</h3><p style="margin-top:8px">Drop study material into this directory and refresh the index.</p></div>'; return;
+        }
+        outlet.innerHTML=entries.sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==="directory"?-1:1).map(item=>{
+          const folder=item.kind==="directory";
+          const ext=item.name.includes(".")?item.name.split(".").pop().toUpperCase():"FILE";
+          const path=JSON.stringify(item.path).replace(/"/g,"&quot;");
+          return '<article class="focus-card"><div><span class="card-meta-badge">'+(folder?"FOLDER":ext)+'</span><h3 style="margin-top:12px;overflow-wrap:anywhere">'+escapeLocalText(item.name)+'</h3><div class="local-file-meta">'+(folder?"Directory":"Local file")+'</div></div><div style="margin-top:20px"><button class="system-btn" onclick="openLocalEntry('+path+')">'+(folder?"Open folder →":"Preview file ↗")+'</button></div></article>';
+        }).join("");
+      }
+      function escapeLocalText(value) {
+        return String(value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+      }
+      function openLocalEntry(path) {
+        const item=localDirectoryIndex.find(x=>JSON.stringify(x.path)===JSON.stringify(path));
+        if (!item) return;
+        if (item.kind==="directory") { localCurrentPath=path; renderCatalogDirectory(); }
+        else openLocalFile(path);
+      }
+      function renderCatalogDirectory() {
+        if (localModeEnabled && localRootHandle) { renderLocalDirectory(); return; }
+        return renderOriginalCatalogDirectory();
+      }
+      const renderOriginalCatalogDirectory = (function() {
+        return async function() {
+          const outputTarget = document.getElementById("catalog-grid-outlet");
+          if (!outputTarget) return;
+          renderBreadcrumbs();
+          if (currentCatalogStructureState === "folder") {
+            const focusNode = findActiveNavigationNode();
+            if (!focusNode || typeof focusNode !== "object") {
+              outputTarget.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-dim);padding:48px 0;">This directory is currently empty.</div>'; return;
+            }
+            const contentKeys = Object.keys(focusNode).filter(k=>k!=="title"&&k!=="link"&&k!=="children");
+            if (!contentKeys.length) { outputTarget.innerHTML='<div style="grid-column:1/-1;text-align:center;color:var(--text-dim);padding:48px 0;">This directory is currently empty.</div>'; return; }
+            let cards=[];
+            for (const key of contentKeys) {
+              const node=focusNode[key]; if (!node || typeof node!=="object") continue;
+              const children=node.children||node;
+              const hasChildren=!!(children&&Object.keys(children).filter(k=>k!=="title"&&k!=="link"&&k!=="children").length);
+              let cache="";
+              if (node.link) {
+                const id="file-"+btoa(encodeURIComponent(node.link)).slice(0,24);
+                const cached=await checkBookIsCached(id);
+                cache=cached?'<span class="offline-cache-badge">✓ Local Download Cached</span>':'';
+              }
+              cards.push('<article class="focus-card"><div><span class="card-meta-badge">'+(hasChildren?"Folder Node":"Linked Resource")+'</span>'+cache+'<h3>'+escapeLocalText(node.title||key)+'</h3></div><div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap">'+(hasChildren?'<button class="system-btn" onclick="ascendDeepDirectory('+JSON.stringify(key)+')">Open</button>':'')+(node.link?'<a href="'+node.link+'" target="_blank" rel="noopener"><button class="system-btn secondary">Access Cloud ↗</button></a>':'')+'</div></article>');
+            }
+            outputTarget.innerHTML=cards.join("");
+          } else {
+            const list=databaseFlatCacheList;
+            outputTarget.innerHTML=list.map(doc=>'<article class="focus-card"><span class="card-meta-badge">Indexed Link</span><h3>'+escapeLocalText(doc.title)+'</h3><div style="margin-top:20px"><a href="'+doc.link+'" target="_blank"><button class="system-btn secondary">Resource Link ↗</button></a></div></article>').join("");
+          }
+        };
+      })();
+      async function showLocalLibrarySettings() {
+        const pane=document.getElementById("pane-preferences");
+        if (!pane || document.getElementById("local-library-settings")) return;
+        const box=document.createElement("section"); box.id="local-library-settings"; box.className="focus-card";
+        box.style.cssText="margin-bottom:20px;padding:22px";
+        box.innerHTML='<span class="card-meta-badge">LOCAL-FIRST STORAGE</span><h2 style="margin:12px 0 6px">Your study folder</h2><p style="color:var(--text-dim);font-size:.85rem;margin-bottom:16px">Choose a folder on this PC. HSC StudyOS indexes it in your browser. Files stay on your device; permission is controlled by your browser.</p><div style="display:flex;gap:10px;flex-wrap:wrap"><button class="system-btn" onclick="chooseLocalDirectory()">Choose local folder</button><button class="system-btn secondary" onclick="indexLocalDirectory()">Rescan folder</button><button class="system-btn secondary" onclick="disconnectLocalDirectory()">Disconnect</button></div><p id="local-library-status" style="margin-top:12px;color:var(--text-dim);font-size:.78rem">No folder connected</p><p style="margin-top:10px;color:var(--text-muted);font-size:.72rem">Supported in Vivaldi/Chromium on HTTPS. PDF, images, audio, video and text preview in-app. Other formats open through the browser's built-in handler.</p>';
+        pane.prepend(box);
+        const banner=document.getElementById("local-library-status");
+        if (localRootHandle && banner) banner.textContent=localRootHandle.name+" · "+localDirectoryIndex.length+" items indexed";
+      }
+      async function disconnectLocalDirectory() {
+        localRootHandle=null; localDirectoryIndex=[]; localCurrentPath=[]; localModeEnabled=false;
+        const db=await openLocalHandleDB();
+        await new Promise(resolve=>{const tx=db.transaction("settings","readwrite");tx.objectStore("settings").delete("rootDirectory");tx.oncomplete=resolve;tx.onerror=resolve;});
+        db.close();
+        const status=document.getElementById("local-library-status"); if(status) status.textContent="No folder connected";
+        activeNavigationPathVector=[]; renderCatalogDirectory(); writeEventLog("Local folder disconnected.");
+      }
+      const originalTriggerNavigation=triggerNavigation;
+      triggerNavigation=function(paneId,element) {
+        originalTriggerNavigation(paneId,element);
+        if(paneId==="pane-preferences") showLocalLibrarySettings();
+      };
+      const originalBreadcrumbs=renderBreadcrumbs;
+      renderBreadcrumbs=function() {
+        if (localModeEnabled && localRootHandle) return;
+        originalBreadcrumbs();
+      };
+      window.addEventListener("load",()=>{ restoreLocalRootHandle(); });
+    </script>
+
     </script>
   </body>
 </html>
